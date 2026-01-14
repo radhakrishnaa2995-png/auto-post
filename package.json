@@ -1,0 +1,8 @@
+{
+  "name": "drive-auto-post",
+  "type": "module",
+  "dependencies": {
+    "googleapis": "^130.0.0",
+    "node-fetch": "^3.3.2"
+  }
+}
