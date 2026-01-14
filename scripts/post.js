@@ -1,7 +1,7 @@
 import { google } from "googleapis";
 import fetch from "node-fetch";
 
-/* ---------------- GOOGLE DRIVE AUTH ---------------- */
+/* ================= GOOGLE DRIVE AUTH ================= */
 
 const auth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_SERVICE_KEY),
@@ -10,7 +10,15 @@ const auth = new google.auth.GoogleAuth({
 
 const drive = google.drive({ version: "v3", auth });
 
-/* ---------------- HELPERS ---------------- */
+/* ================= CAPTION ================= */
+
+const CAPTION = `DEVON KE DEV MAHADEV 🙏🏻 
+.
+.
+.
+#mahadev #harharmahadev #mahadeva #bholenath #jaibholenath #shiv #shiva #shivshakti #shivshankar #shivbhakt #shivshambhu #mahakaal #mahakaleshwar #shambhu #amarnath #kedarnathtemple #bholebaba #bambambhole #omnamahshivaya #devokedevmahadev #viralreels #instagood #reelitfeelit #instagram`;
+
+/* ================= HELPERS ================= */
 
 function extractNumber(filename) {
   const match = filename.match(/(\d+)/);
@@ -21,14 +29,17 @@ function isVideo(filename) {
   return /\.(mp4|mov|mkv|avi)$/i.test(filename);
 }
 
-/* ---------------- DRIVE FUNCTIONS ---------------- */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/* ================= DRIVE FUNCTIONS ================= */
 
 async function listFiles() {
   const res = await drive.files.list({
-    q: `'${process.env.SOURCE_FOLDER_ID}' in parents and trashed=false`,
+    q: `'${process.env.SOURCE_FOLDER_ID}' in parents and trashed = false`,
     fields: "files(id, name)",
   });
-
   return res.data.files || [];
 }
 
@@ -49,24 +60,26 @@ async function moveFile(fileId) {
   });
 }
 
-/* ---------------- INSTAGRAM POST ---------------- */
+/* ================= INSTAGRAM POST ================= */
 
 async function postToInstagram(file, mediaUrl) {
-  const isReel = isVideo(file.name);
+  const reel = isVideo(file.name);
 
-  console.log("Posting type:", isReel ? "REEL (video)" : "IMAGE");
+  console.log("Posting type:", reel ? "REEL (video)" : "IMAGE");
 
   const mediaPayload = {
-    caption: "Auto posted",
+    caption: CAPTION,
     access_token: process.env.IG_TOKEN,
   };
 
-  if (isReel) {
+  if (reel) {
     mediaPayload.video_url = mediaUrl;
     mediaPayload.media_type = "REELS";
   } else {
     mediaPayload.image_url = mediaUrl;
   }
+
+  /* ---- CREATE MEDIA ---- */
 
   const mediaRes = await fetch(
     `https://graph.facebook.com/v19.0/${process.env.IG_USER_ID}/media`,
@@ -83,6 +96,15 @@ async function postToInstagram(file, mediaUrl) {
   if (!media.id) {
     throw new Error("Media creation failed: " + JSON.stringify(media));
   }
+
+  /* ---- WAIT FOR VIDEO PROCESSING (IMPORTANT) ---- */
+
+  if (reel) {
+    console.log("⏳ Waiting for Instagram to process reel...");
+    await sleep(60_000); // 60 seconds
+  }
+
+  /* ---- PUBLISH MEDIA ---- */
 
   const publishRes = await fetch(
     `https://graph.facebook.com/v19.0/${process.env.IG_USER_ID}/media_publish`,
@@ -104,7 +126,7 @@ async function postToInstagram(file, mediaUrl) {
   }
 }
 
-/* ---------------- MAIN ---------------- */
+/* ================= MAIN ================= */
 
 (async () => {
   try {
@@ -129,3 +151,4 @@ async function postToInstagram(file, mediaUrl) {
     process.exit(1);
   }
 })();
+
