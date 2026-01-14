@@ -1,6 +1,8 @@
 import { google } from "googleapis";
 import fetch from "node-fetch";
 
+/* ---------------- GOOGLE DRIVE AUTH ---------------- */
+
 const auth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_SERVICE_KEY),
   scopes: ["https://www.googleapis.com/auth/drive"],
@@ -8,17 +10,26 @@ const auth = new google.auth.GoogleAuth({
 
 const drive = google.drive({ version: "v3", auth });
 
+/* ---------------- HELPERS ---------------- */
+
 function extractNumber(filename) {
   const match = filename.match(/(\d+)/);
   return match ? parseInt(match[1], 10) : Infinity;
 }
+
+function isVideo(filename) {
+  return /\.(mp4|mov|mkv|avi)$/i.test(filename);
+}
+
+/* ---------------- DRIVE FUNCTIONS ---------------- */
 
 async function listFiles() {
   const res = await drive.files.list({
     q: `'${process.env.SOURCE_FOLDER_ID}' in parents and trashed=false`,
     fields: "files(id, name)",
   });
-  return res.data.files;
+
+  return res.data.files || [];
 }
 
 function pickNextFile(files) {
@@ -30,24 +41,50 @@ function driveDirectUrl(fileId) {
   return `https://drive.google.com/uc?id=${fileId}&export=download`;
 }
 
-async function postToInstagram(imageUrl) {
+async function moveFile(fileId) {
+  await drive.files.update({
+    fileId,
+    addParents: process.env.POSTED_FOLDER_ID,
+    removeParents: process.env.SOURCE_FOLDER_ID,
+  });
+}
+
+/* ---------------- INSTAGRAM POST ---------------- */
+
+async function postToInstagram(file, mediaUrl) {
+  const isReel = isVideo(file.name);
+
+  console.log("Posting type:", isReel ? "REEL (video)" : "IMAGE");
+
+  const mediaPayload = {
+    caption: "Auto posted",
+    access_token: process.env.IG_TOKEN,
+  };
+
+  if (isReel) {
+    mediaPayload.video_url = mediaUrl;
+    mediaPayload.media_type = "REELS";
+  } else {
+    mediaPayload.image_url = mediaUrl;
+  }
+
   const mediaRes = await fetch(
     `https://graph.facebook.com/v19.0/${process.env.IG_USER_ID}/media`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        image_url: imageUrl,
-        caption: "Auto posted",
-        access_token: process.env.IG_TOKEN,
-      }),
+      body: JSON.stringify(mediaPayload),
     }
   );
 
   const media = await mediaRes.json();
-  if (!media.id) throw new Error("Media creation failed");
+  console.log("Media creation response:", media);
 
-  await fetch(
+  if (!media.id) {
+    throw new Error("Media creation failed: " + JSON.stringify(media));
+  }
+
+  const publishRes = await fetch(
     `https://graph.facebook.com/v19.0/${process.env.IG_USER_ID}/media_publish`,
     {
       method: "POST",
@@ -58,29 +95,37 @@ async function postToInstagram(imageUrl) {
       }),
     }
   );
+
+  const publish = await publishRes.json();
+  console.log("Publish response:", publish);
+
+  if (!publish.id) {
+    throw new Error("Publish failed: " + JSON.stringify(publish));
+  }
 }
 
-async function moveFile(fileId) {
-  await drive.files.update({
-    fileId,
-    addParents: process.env.POSTED_FOLDER_ID,
-    removeParents: process.env.SOURCE_FOLDER_ID,
-  });
-}
+/* ---------------- MAIN ---------------- */
 
 (async () => {
-  const files = await listFiles();
-  if (!files.length) {
-    console.log("No files to post");
-    return;
+  try {
+    const files = await listFiles();
+
+    if (!files.length) {
+      console.log("No files to post");
+      return;
+    }
+
+    const file = pickNextFile(files);
+    console.log("Selected file:", file.name);
+
+    const mediaUrl = driveDirectUrl(file.id);
+
+    await postToInstagram(file, mediaUrl);
+    await moveFile(file.id);
+
+    console.log("✅ Posted and moved:", file.name);
+  } catch (err) {
+    console.error("❌ ERROR:", err.message);
+    process.exit(1);
   }
-
-  const file = pickNextFile(files);
-  console.log("Posting:", file.name);
-
-  const imageUrl = driveDirectUrl(file.id);
-  await postToInstagram(imageUrl);
-  await moveFile(file.id);
-
-  console.log("Posted and moved:", file.name);
 })();
