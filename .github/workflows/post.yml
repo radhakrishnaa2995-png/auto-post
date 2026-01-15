@@ -12,18 +12,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 18
 
-      - run: npm install
+      - name: Install dependencies
+        run: npm install
 
-      - run: node scripts/post.js
+      - name: Run post script
+        run: node scripts/post.js
         env:
           GOOGLE_SERVICE_KEY: ${{ secrets.GOOGLE_SERVICE_KEY }}
           SOURCE_FOLDER_ID: ${{ secrets.SOURCE_FOLDER_ID }}
           POSTED_FOLDER_ID: ${{ secrets.POSTED_FOLDER_ID }}
           IG_TOKEN: ${{ secrets.IG_TOKEN }}
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          GH_USERNAME: ${{ secrets.GH_USERNAME }}
+          GH_REPO: ${{ secrets.GH_REPO }}
