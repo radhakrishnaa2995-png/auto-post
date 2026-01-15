@@ -1,0 +1,38 @@
+name: Upload to GitHub Pages
+
+on:
+  schedule:
+    - cron: "30 1 * * *"    # 7:00 AM IST
+    - cron: "30 6 * * *"    # 12:00 PM IST
+    - cron: "30 12 * * *"   # 6:00 PM IST
+  workflow_dispatch:
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Upload file from Drive to media/
+        run: node scripts/upload.js
+        env:
+          GOOGLE_SERVICE_KEY: ${{ secrets.GOOGLE_SERVICE_KEY }}
+          SOURCE_FOLDER_ID: ${{ secrets.SOURCE_FOLDER_ID }}
+
+      - name: Commit and push media
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add media/
+          git commit -m "Upload media for posting" || echo "No changes"
+          git push
