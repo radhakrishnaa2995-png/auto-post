@@ -1,8 +1,9 @@
 import { google } from "googleapis";
 import fetch from "node-fetch";
 import fs from "fs";
+import path from "path";
 
-/* ---------- GOOGLE DRIVE AUTH ---------- */
+/* ---------------- GOOGLE DRIVE AUTH ---------------- */
 
 const auth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_SERVICE_KEY),
@@ -11,46 +12,70 @@ const auth = new google.auth.GoogleAuth({
 
 const drive = google.drive({ version: "v3", auth });
 
-/* ---------- HELPERS ---------- */
+/* ---------------- CONSTANTS ---------------- */
 
-function extractNumber(name) {
-  const m = name.match(/(\d+)/);
-  return m ? parseInt(m[1]) : Infinity;
+const MEDIA_DIR = "media";
+
+const CAPTION = `DEVON KE DEV MAHADEV 🙏🏻 
+.
+.
+.
+#mahadev #harharmahadev #mahadeva #bholenath #jaibholenath #shiv #shiva #shivshakti 
+#shivshankar #shivbhakt #shivshambhu #mahakaal #mahakaleshwar #shambhu #amarnath 
+#kedarnathtemple #bholebaba #bambambhole #omnamahshivaya #devokedevmahadev 
+#viralreels #instagood #reelitfeelit #instagram`;
+
+/* ---------------- HELPERS ---------------- */
+
+function extractNumber(filename) {
+  const match = filename.match(/(\d+)/);
+  return match ? parseInt(match[1], 10) : Infinity;
 }
 
-function isVideo(name) {
-  return /\.(mp4|mov|mkv)$/i.test(name);
+function isVideo(filename) {
+  return /\.(mp4|mov|mkv|avi)$/i.test(filename);
 }
 
 function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-/* ---------- DRIVE ---------- */
+/* ---------------- DRIVE FUNCTIONS ---------------- */
 
 async function listFiles() {
   const res = await drive.files.list({
     q: `'${process.env.SOURCE_FOLDER_ID}' in parents and trashed=false`,
-    fields: "files(id,name)",
+    fields: "files(id, name)",
   });
+
   return res.data.files || [];
 }
 
-async function downloadFile(file) {
-  const dest = `videos/${file.name}`;
+function pickNextFile(files) {
+  files.sort((a, b) => extractNumber(a.name) - extractNumber(b.name));
+  return files[0];
+}
+
+async function downloadFromDrive(file) {
+  if (!fs.existsSync(MEDIA_DIR)) {
+    fs.mkdirSync(MEDIA_DIR);
+  }
+
+  const filePath = path.join(MEDIA_DIR, file.name);
+
   const res = await drive.files.get(
     { fileId: file.id, alt: "media" },
     { responseType: "stream" }
   );
 
   await new Promise((resolve, reject) => {
-    const w = fs.createWriteStream(dest);
-    res.data.pipe(w);
-    w.on("finish", resolve);
-    w.on("error", reject);
+    const dest = fs.createWriteStream(filePath);
+    res.data.pipe(dest);
+    dest.on("finish", resolve);
+    dest.on("error", reject);
   });
 
-  return dest;
+  return filePath;
 }
 
 async function moveFile(fileId) {
@@ -61,37 +86,50 @@ async function moveFile(fileId) {
   });
 }
 
-/* ---------- INSTAGRAM ---------- */
+/* ---------------- INSTAGRAM POST ---------------- */
 
-async function postToInstagram(fileName) {
-  const url = `https://${process.env.GITHUB_REPOSITORY_OWNER}.github.io/${process.env.GITHUB_REPOSITORY}/videos/${fileName}`;
+async function postToInstagram(file) {
+  const publicUrl = `https://${process.env.GITHUB_USERNAME}.github.io/${process.env.GITHUB_REPO}/${MEDIA_DIR}/${encodeURIComponent(file.name)}`;
 
-  const caption = `DEVON KE DEV MAHADEV 🙏🏻
-.
-.
-.
-#mahadev #harharmahadev #mahadeva #bholenath #shiv #shivshakti #mahakaal #omnamahshivaya #reels`;
+  console.log("Public media URL:", publicUrl);
 
-  const media = await fetch(
+  const isReel = isVideo(file.name);
+
+  const mediaPayload = {
+    caption: CAPTION,
+    access_token: process.env.IG_TOKEN,
+  };
+
+  if (isReel) {
+    mediaPayload.video_url = publicUrl;
+    mediaPayload.media_type = "REELS";
+  } else {
+    mediaPayload.image_url = publicUrl;
+  }
+
+  const mediaRes = await fetch(
     `https://graph.facebook.com/v19.0/${process.env.IG_USER_ID}/media`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        video_url: url,
-        media_type: "REELS",
-        caption,
-        access_token: process.env.IG_TOKEN,
-      }),
+      body: JSON.stringify(mediaPayload),
     }
-  ).then(r => r.json());
+  );
 
-  if (!media.id) throw new Error(JSON.stringify(media));
+  const media = await mediaRes.json();
+  console.log("Media creation:", media);
 
-  console.log("⏳ Waiting for Instagram processing...");
-  await sleep(90000); // 90 sec
+  if (!media.id) {
+    throw new Error("Media creation failed");
+  }
 
-  const publish = await fetch(
+  // ⏳ Instagram needs time to process videos
+  if (isReel) {
+    console.log("⏳ Waiting for Instagram to process reel...");
+    await sleep(60000); // 60 seconds
+  }
+
+  const publishRes = await fetch(
     `https://graph.facebook.com/v19.0/${process.env.IG_USER_ID}/media_publish`,
     {
       method: "POST",
@@ -101,41 +139,41 @@ async function postToInstagram(fileName) {
         access_token: process.env.IG_TOKEN,
       }),
     }
-  ).then(r => r.json());
+  );
 
-  if (!publish.id) throw new Error(JSON.stringify(publish));
+  const publish = await publishRes.json();
+  console.log("Publish response:", publish);
+
+  if (!publish.id) {
+    throw new Error("Publish failed");
+  }
 }
 
-/* ---------- MAIN ---------- */
+/* ---------------- MAIN ---------------- */
 
 (async () => {
-  const files = await listFiles();
-  if (!files.length) return console.log("No files");
+  try {
+    const files = await listFiles();
 
-  files.sort((a, b) => extractNumber(a.name) - extractNumber(b.name));
-  const file = files[0];
+    if (!files.length) {
+      console.log("No files to post");
+      return;
+    }
 
-  console.log("Posting:", file.name);
+    const file = pickNextFile(files);
+    console.log("Selected file:", file.name);
 
-  await downloadFile(file);
+    await downloadFromDrive(file);
 
-  // commit video to GitHub Pages
-  await fetch("https://api.github.com/repos/" + process.env.GITHUB_REPOSITORY + "/contents/videos/" + file.name, {
-    method: "PUT",
-    headers: {
-      Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      message: `Add ${file.name}`,
-      content: fs.readFileSync(`videos/${file.name}`, "base64")
-    })
-  });
+    console.log("Waiting for GitHub Pages to serve file...");
+    await sleep(90000); // wait for Pages cache
 
-  await postToInstagram(file.name);
-  await moveFile(file.id);
+    await postToInstagram(file);
+    await moveFile(file.id);
 
-  console.log("✅ DONE:", file.name);
+    console.log("✅ Posted and moved:", file.name);
+  } catch (err) {
+    console.error("❌ ERROR:", err.message);
+    process.exit(1);
+  }
 })();
-
-
