@@ -4,48 +4,55 @@ import { google } from "googleapis";
 
 const auth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_SERVICE_KEY),
-  scopes: ["https://www.googleapis.com/auth/drive"],
+  scopes: ["https://www.googleapis.com/auth/drive.readonly"],
 });
 
 const drive = google.drive({ version: "v3", auth });
-const MEDIA_DIR = "media";
+
+const SOURCE_FOLDER_ID = process.env.SOURCE_FOLDER_ID;
+
+async function listFiles() {
+  const res = await drive.files.list({
+    q: `'${SOURCE_FOLDER_ID}' in parents and trashed=false`,
+    fields: "files(id, name)",
+  });
+  return res.data.files || [];
+}
 
 function extractNumber(name) {
   const m = name.match(/(\d+)/);
-  return m ? Number(m[1]) : Infinity;
+  return m ? parseInt(m[1], 10) : Infinity;
+}
+
+async function downloadFile(file) {
+  const mediaDir = path.join(process.cwd(), "media");
+  if (!fs.existsSync(mediaDir)) fs.mkdirSync(mediaDir);
+
+  const destPath = path.join(mediaDir, file.name);
+  const dest = fs.createWriteStream(destPath);
+
+  const res = await drive.files.get(
+    { fileId: file.id, alt: "media" },
+    { responseType: "stream" }
+  );
+
+  await new Promise((resolve, reject) => {
+    res.data
+      .on("end", resolve)
+      .on("error", reject)
+      .pipe(dest);
+  });
+
+  console.log(`✅ Downloaded to media/${file.name}`);
 }
 
 (async () => {
-  if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR);
+  const files = await listFiles();
+  if (!files.length) throw new Error("No files found in Drive folder");
 
-  const res = await drive.files.list({
-    q: `'${process.env.SOURCE_FOLDER_ID}' in parents and trashed=false`,
-    fields: "files(id,name)",
-  });
-
-  if (!res.data.files.length) {
-    console.log("No files found");
-    return;
-  }
-
-  res.data.files.sort((a, b) => extractNumber(a.name) - extractNumber(b.name));
-  const file = res.data.files[0];
+  files.sort((a, b) => extractNumber(a.name) - extractNumber(b.name));
+  const file = files[0];
 
   console.log("Uploading:", file.name);
-
-  const dest = path.join(MEDIA_DIR, file.name);
-  const stream = fs.createWriteStream(dest);
-
-  await drive.files.get(
-    { fileId: file.id, alt: "media" },
-    { responseType: "stream" },
-    res =>
-      new Promise((resolve, reject) => {
-        res.data.pipe(stream);
-        stream.on("finish", resolve);
-        stream.on("error", reject);
-      })
-  );
-
-  console.log("Uploaded to media/");
+  await downloadFile(file);
 })();
