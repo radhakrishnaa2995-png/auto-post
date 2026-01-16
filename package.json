@@ -3,6 +3,7 @@
   "type": "module",
   "dependencies": {
     "googleapis": "^130.0.0",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "axios": "^1.6.0"
   }
 }
