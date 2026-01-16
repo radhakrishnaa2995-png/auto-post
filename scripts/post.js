@@ -1,33 +1,29 @@
 import fs from "fs";
 import path from "path";
 import fetch from "node-fetch";
-import { execSync } from "child_process";
+import { google } from "googleapis";
 
-/* ---------------- CONFIG ---------------- */
+/* ---------------- ENV VALIDATION ---------------- */
 
-const MEDIA_DIR = path.join(process.cwd(), "media");
+const REQUIRED_ENV = [
+  "IG_USER_ID",
+  "IG_TOKEN",
+  "GH_USERNAME",
+  "GH_REPO",
+  "GOOGLE_SERVICE_KEY",
+  "SOURCE_FOLDER_ID",
+  "POSTED_FOLDER_ID",
+];
 
-const IG_USER_ID = process.env.IG_USER_ID;
-const IG_TOKEN = process.env.IG_TOKEN;
-const GH_USERNAME = process.env.GH_USERNAME;
-const GH_REPO = process.env.GH_REPO;
-
-/* ---------------- VALIDATION ---------------- */
-
-const REQUIRED_ENV = {
-  IG_USER_ID,
-  IG_TOKEN,
-  GH_USERNAME,
-  GH_REPO,
-};
-
-for (const [key, value] of Object.entries(REQUIRED_ENV)) {
-  if (!value) {
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
     throw new Error(`Missing environment variable: ${key}`);
   }
 }
 
-/* ---------------- CAPTION ---------------- */
+/* ---------------- CONSTANTS ---------------- */
+
+const MEDIA_DIR = path.join(process.cwd(), "media");
 
 const CAPTION = `DEVON KE DEV MAHADEV 🙏🏻
 
@@ -37,41 +33,57 @@ const CAPTION = `DEVON KE DEV MAHADEV 🙏🏻
 #bholebaba #bambambhole #omnamahshivaya #devokedevmahadev
 #viralreels #instagood #reelitfeelit #instagram`;
 
+/* ---------------- GOOGLE DRIVE ---------------- */
+
+const auth = new google.auth.GoogleAuth({
+  credentials: JSON.parse(process.env.GOOGLE_SERVICE_KEY),
+  scopes: ["https://www.googleapis.com/auth/drive"],
+});
+
+const drive = google.drive({ version: "v3", auth });
+
 /* ---------------- HELPERS ---------------- */
 
-function getNextMediaFile() {
-  const files = fs
-    .readdirSync(MEDIA_DIR)
-    .filter(f => f.endsWith(".mp4"))
-    .sort();
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-  if (files.length === 0) {
-    console.log("❌ No media files found");
+function getMediaFile() {
+  const files = fs.readdirSync(MEDIA_DIR).filter(f => f.endsWith(".mp4"));
+  if (!files.length) {
+    console.log("ℹ️ No media file found on GitHub Pages");
     process.exit(0);
   }
-
-  return files[0]; // ONLY ONE FILE
+  return files[0];
 }
 
-function githubPagesUrl(filename) {
-  return `https://${GH_USERNAME}.github.io/${GH_REPO}/media/${filename}`;
-}
-
-async function waitForUrl(url, retries = 20) {
-  for (let i = 0; i < retries; i++) {
-    const res = await fetch(url, { method: "HEAD" });
-    if (res.ok) return;
-    console.log("⏳ Waiting for GitHub Pages...");
-    await new Promise(r => setTimeout(r, 5000));
-  }
-  throw new Error("GitHub Pages did not serve the file in time");
+function publicUrl(filename) {
+  return `https://${process.env.GH_USERNAME}.github.io/${process.env.GH_REPO}/media/${filename}`;
 }
 
 /* ---------------- INSTAGRAM ---------------- */
 
+async function waitForProcessing(containerId) {
+  for (let i = 0; i < 20; i++) {
+    await sleep(15000);
+
+    const res = await fetch(
+      `https://graph.facebook.com/v19.0/${containerId}?fields=status_code&access_token=${process.env.IG_TOKEN}`
+    );
+    const json = await res.json();
+
+    console.log("📦 IG status:", json.status_code);
+
+    if (json.status_code === "FINISHED") return;
+    if (json.status_code === "ERROR") {
+      throw new Error("Instagram processing error");
+    }
+  }
+
+  throw new Error("Instagram processing timeout");
+}
+
 async function postReel(videoUrl) {
   const createRes = await fetch(
-    `https://graph.facebook.com/v19.0/${IG_USER_ID}/media`,
+    `https://graph.facebook.com/v19.0/${process.env.IG_USER_ID}/media`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -79,72 +91,77 @@ async function postReel(videoUrl) {
         media_type: "REELS",
         video_url: videoUrl,
         caption: CAPTION,
-        access_token: IG_TOKEN,
+        access_token: process.env.IG_TOKEN,
       }),
     }
   );
 
-  const creation = await createRes.json();
-  if (!creation.id) {
-    throw new Error(`Media creation failed: ${JSON.stringify(creation)}`);
+  const media = await createRes.json();
+  if (!media.id) {
+    throw new Error("Media creation failed: " + JSON.stringify(media));
   }
 
-  console.log("🎬 Media created:", creation.id);
+  console.log("🎬 Media created:", media.id);
 
-  // Instagram needs processing time
-  await new Promise(r => setTimeout(r, 20000));
+  await waitForProcessing(media.id);
 
   const publishRes = await fetch(
-    `https://graph.facebook.com/v19.0/${IG_USER_ID}/media_publish`,
+    `https://graph.facebook.com/v19.0/${process.env.IG_USER_ID}/media_publish`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        creation_id: creation.id,
-        access_token: IG_TOKEN,
+        creation_id: media.id,
+        access_token: process.env.IG_TOKEN,
       }),
     }
   );
 
   const publish = await publishRes.json();
   if (!publish.id) {
-    throw new Error(`Publish failed: ${JSON.stringify(publish)}`);
+    throw new Error("Publish failed: " + JSON.stringify(publish));
   }
 
-  console.log("✅ Reel published:", publish.id);
+  console.log("✅ Reel published");
 }
 
-/* ---------------- CLEANUP ---------------- */
+/* ---------------- MOVE DRIVE FILE ---------------- */
 
-function deleteMedia(filename) {
-  fs.unlinkSync(path.join(MEDIA_DIR, filename));
+async function moveDriveFile(filename) {
+  const res = await drive.files.list({
+    q: `name='${filename}' and '${process.env.SOURCE_FOLDER_ID}' in parents`,
+    fields: "files(id)",
+  });
 
-  execSync("git config user.name 'actions-user'");
-  execSync("git config user.email 'actions@github.com'");
-  execSync("git add media");
-  execSync(`git commit -m "Remove posted media ${filename}"`);
-  execSync("git push");
+  if (!res.data.files.length) {
+    console.log("ℹ️ Drive file already moved");
+    return;
+  }
 
-  console.log("🧹 Deleted media from GitHub Pages:", filename);
+  await drive.files.update({
+    fileId: res.data.files[0].id,
+    addParents: process.env.POSTED_FOLDER_ID,
+    removeParents: process.env.SOURCE_FOLDER_ID,
+  });
+
+  console.log("📁 Drive file moved to POSTED");
 }
 
 /* ---------------- MAIN ---------------- */
 
 (async () => {
   try {
-    const filename = getNextMediaFile();
-    console.log("📌 Selected:", filename);
+    const filename = getMediaFile();
+    const url = publicUrl(filename);
 
-    const publicUrl = githubPagesUrl(filename);
-    console.log("🌍 Public URL:", publicUrl);
+    console.log("🌍 Posting:", url);
 
-    await waitForUrl(publicUrl);
-    await postReel(publicUrl);
-    deleteMedia(filename);
+    await postReel(url);
+    await moveDriveFile(filename);
 
-    console.log("🎉 DONE — next file will post next run");
+    console.log("🎉 DONE — system ready for next clip");
   } catch (err) {
-    console.error("❌ ERROR:", err.message);
+    console.error("❌ POST ERROR:", err.message);
     process.exit(1);
   }
 })();
