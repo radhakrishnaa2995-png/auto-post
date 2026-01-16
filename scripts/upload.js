@@ -1,83 +1,98 @@
-import fs from "fs";
+import fs from "fs-extra";
 import path from "path";
 import { google } from "googleapis";
-import axios from "axios";
 
-const MEDIA_DIR = path.join(process.cwd(), "media");
+const MEDIA_DIR = "media";
+const SOURCE_FOLDER_ID = process.env.SOURCE_FOLDER_ID;
+const POSTED_FOLDER_ID = process.env.POSTED_FOLDER_ID;
+const SERVICE_KEY = JSON.parse(process.env.GOOGLE_SERVICE_KEY);
 
+// Google Drive auth
 const auth = new google.auth.JWT(
-  JSON.parse(process.env.GOOGLE_SERVICE_KEY).client_email,
+  SERVICE_KEY.client_email,
   null,
-  JSON.parse(process.env.GOOGLE_SERVICE_KEY).private_key,
+  SERVICE_KEY.private_key,
   ["https://www.googleapis.com/auth/drive"]
 );
 
 const drive = google.drive({ version: "v3", auth });
 
+// 1️⃣ Delete old GitHub Pages media
 async function cleanMediaFolder() {
-  if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR);
-
-  const files = fs.readdirSync(MEDIA_DIR);
+  await fs.ensureDir(MEDIA_DIR);
+  const files = await fs.readdir(MEDIA_DIR);
   for (const file of files) {
     if (file !== ".gitkeep") {
-      fs.unlinkSync(path.join(MEDIA_DIR, file));
+      await fs.remove(path.join(MEDIA_DIR, file));
     }
   }
-  console.log("🧹 Old media deleted");
+  console.log("🧹 Old GitHub Pages media deleted");
 }
 
-async function getNextDriveFile() {
+// 2️⃣ Extract number from filename
+function extractNumber(name) {
+  const match = name.match(/(\d+)/);
+  return match ? parseInt(match[1], 10) : Infinity;
+}
+
+// 3️⃣ Get SMALLEST numbered file
+async function getNextSequentialFile() {
   const res = await drive.files.list({
-    q: `'${process.env.SOURCE_FOLDER_ID}' in parents and trashed=false`,
-    orderBy: "createdTime",
-    pageSize: 1,
-    fields: "files(id,name)",
+    q: `'${SOURCE_FOLDER_ID}' in parents and mimeType contains 'video/' and trashed = false`,
+    fields: "files(id, name)"
   });
 
   if (!res.data.files.length) {
-    throw new Error("❌ No files in SOURCE folder");
+    throw new Error("No videos left in source folder");
   }
 
-  return res.data.files[0];
+  const sorted = res.data.files
+    .map(f => ({ ...f, num: extractNumber(f.name) }))
+    .filter(f => Number.isFinite(f.num))
+    .sort((a, b) => a.num - b.num);
+
+  if (!sorted.length) {
+    throw new Error("No valid numbered clips found");
+  }
+
+  return sorted[0]; // smallest number
 }
 
+// 4️⃣ Download selected file
 async function downloadFile(file) {
-  const destPath = path.join(MEDIA_DIR, file.name);
-  const dest = fs.createWriteStream(destPath);
+  const dest = path.join(MEDIA_DIR, file.name);
 
-  const res = await drive.files.get(
+  const response = await drive.files.get(
     { fileId: file.id, alt: "media" },
     { responseType: "stream" }
   );
 
   await new Promise((resolve, reject) => {
-    res.data.pipe(dest);
-    dest.on("finish", resolve);
-    dest.on("error", reject);
+    const stream = fs.createWriteStream(dest);
+    response.data.pipe(stream);
+    stream.on("finish", resolve);
+    stream.on("error", reject);
   });
 
   console.log(`⬇️ Downloaded ${file.name}`);
 }
 
-async function moveToPostedFolder(file) {
+// 5️⃣ Move file to POSTED folder (remove from SOURCE)
+async function moveToPosted(file) {
   await drive.files.update({
     fileId: file.id,
-    addParents: process.env.POSTED_FOLDER_ID,
-    removeParents: process.env.SOURCE_FOLDER_ID,
-    fields: "id, parents",
+    addParents: POSTED_FOLDER_ID,
+    removeParents: SOURCE_FOLDER_ID,
+    fields: "id, parents"
   });
 
-  console.log("📦 Moved file to POSTED folder");
+  console.log(`📁 Moved ${file.name} to POSTED folder`);
 }
 
+// MAIN
 (async () => {
-  try {
-    await cleanMediaFolder();
-    const file = await getNextDriveFile();
-    await downloadFile(file);
-    await moveToPostedFolder(file);
-  } catch (err) {
-    console.error(err);
-    process.exit(1);
-  }
+  await cleanMediaFolder();
+  const file = await getNextSequentialFile();
+  await downloadFile(file);
+  await moveToPosted(file);
 })();
