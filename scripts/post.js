@@ -1,68 +1,61 @@
 import fs from "fs";
-import path from "path";
-import axios from "axios";
-
-const MEDIA_DIR = path.join(process.cwd(), "media");
+import fetch from "node-fetch";
 
 const IG_TOKEN = process.env.IG_TOKEN;
 const IG_USER_ID = process.env.IG_USER_ID;
+const GH_USERNAME = process.env.GH_USERNAME;
+const GH_REPO = process.env.GH_REPO;
 
-const CAPTION = `
-DEVON KE DEV MAHADEV 🙏🏻
+const MEDIA_DIR = "media";
 
-️
+const CAPTION = `DEVON KE DEV MAHADEV 🙏🏻
 
-#mahadev #harharmahadev #mahadeva #bholenath #jaibholenath
-#shiv #shiva #shivshakti #mahakaal #omnamahshivaya
-#devokedevmahadev #reelitfeelit #viralreels
-`;
+#mahadev #harharmahadev #mahadeva #bholenath
+#shiv #shiva #shivshakti #mahakaal
+#omnamahshivaya #devokedevmahadev
+#viralreels #instagram`;
 
 function getMediaFile() {
   const files = fs.readdirSync(MEDIA_DIR).filter(f => f.endsWith(".mp4"));
-  if (!files.length) throw new Error("❌ No media found");
+  if (!files.length) throw new Error("No media file found");
   return files[0];
 }
 
-async function postReel(filename) {
-  const mediaUrl = `https://${process.env.GH_USERNAME}.github.io/${process.env.GH_REPO}/media/${filename}`;
+async function postReel() {
+  const file = getMediaFile();
+  const mediaUrl = `https://${GH_USERNAME}.github.io/${GH_REPO}/media/${file}`;
 
-  console.log("🎥 Media URL:", mediaUrl);
-
-  const create = await axios.post(
+  const create = await fetch(
     `https://graph.facebook.com/v19.0/${IG_USER_ID}/media`,
     {
-      video_url: mediaUrl,
-      caption: CAPTION,
-      media_type: "REELS",
-      access_token: IG_TOKEN,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        media_type: "REELS",
+        video_url: mediaUrl,
+        caption: CAPTION,
+        access_token: IG_TOKEN
+      })
     }
-  );
+  ).then(r => r.json());
 
-  const creationId = create.data.id;
+  if (!create.id) throw new Error("Media container creation failed");
 
-  await new Promise(r => setTimeout(r, 20000));
-
-  const publish = await axios.post(
+  const publish = await fetch(
     `https://graph.facebook.com/v19.0/${IG_USER_ID}/media_publish`,
     {
-      creation_id: creationId,
-      access_token: IG_TOKEN,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        creation_id: create.id,
+        access_token: IG_TOKEN
+      })
     }
-  );
+  ).then(r => r.json());
 
-  if (!publish.data.id) {
-    throw new Error("❌ Publish failed");
-  }
+  if (!publish.id) throw new Error("Publish failed");
 
   console.log("✅ Reel posted successfully");
 }
 
-(async () => {
-  try {
-    const file = getMediaFile();
-    await postReel(file);
-  } catch (err) {
-    console.error(err.response?.data || err);
-    process.exit(1);
-  }
-})();
+postReel();
