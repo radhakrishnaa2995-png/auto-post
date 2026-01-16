@@ -3,13 +3,11 @@ import path from "path";
 import { google } from "googleapis";
 
 const SOURCE_FOLDER_ID = process.env.SOURCE_FOLDER_ID;
+const POSTED_FOLDER_ID = process.env.POSTED_FOLDER_ID;
+
 const MEDIA_DIR = path.join(process.cwd(), "media");
 
 // -------------------- AUTH --------------------
-if (!process.env.GOOGLE_SERVICE_KEY) {
-  throw new Error("GOOGLE_SERVICE_KEY secret is missing");
-}
-
 const auth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_SERVICE_KEY),
   scopes: ["https://www.googleapis.com/auth/drive"],
@@ -27,7 +25,7 @@ function getClipNumber(name) {
 async function run() {
   console.log("🚀 Upload workflow started");
 
-  // 1️⃣ Clear GitHub Pages media
+  // 1️⃣ Clear GitHub Pages media folder
   if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR);
 
   for (const file of fs.readdirSync(MEDIA_DIR)) {
@@ -35,19 +33,19 @@ async function run() {
       fs.unlinkSync(path.join(MEDIA_DIR, file));
     }
   }
-  console.log("🧹 Old GitHub Pages media deleted");
+  console.log("🧹 Old media deleted");
 
-  // 2️⃣ List videos from SOURCE folder
+  // 2️⃣ List files from SOURCE folder
   const listRes = await drive.files.list({
-    q: `'${SOURCE_FOLDER_ID}' in parents and mimeType='video/mp4' and trashed=false`,
+    q: '${SOURCE_FOLDER_ID}' in parents and mimeType='video/mp4',
     fields: "files(id, name)",
   });
 
-  if (!listRes.data.files || listRes.data.files.length === 0) {
+  if (!listRes.data.files.length) {
     throw new Error("❌ No video files found in SOURCE folder");
   }
 
-  // 3️⃣ Sort sequentially
+  // 3️⃣ Sort numerically (clip_16 → clip_17 → ...)
   const sortedFiles = listRes.data.files
     .map(f => ({ ...f, num: getClipNumber(f.name) }))
     .filter(f => f.num !== null)
@@ -58,7 +56,7 @@ async function run() {
   }
 
   const file = sortedFiles[0];
-  console.log(`🎯 Selected: ${file.name}`);
+  console.log(🎯 Selected: ${file.name});
 
   // 4️⃣ Download file
   const destPath = path.join(MEDIA_DIR, file.name);
@@ -76,12 +74,18 @@ async function run() {
       .on("error", reject);
   });
 
-  console.log(`⬇️ Downloaded ${file.name}`);
+  console.log(⬇️ Downloaded ${file.name});
 
-  // 5️⃣ DELETE file from SOURCE folder
-  await drive.files.delete({ fileId: file.id });
+  // 5️⃣ Move file: SOURCE → POSTED_FILES
+  await drive.files.update({
+    fileId: file.id,
+    addParents: POSTED_FOLDER_ID,
+    removeParents: SOURCE_FOLDER_ID,
+    fields: "id, parents",
+  });
 
-  console.log(`🗑️ Deleted ${file.name} from SOURCE folder`);
+  console.log(📦 Moved ${file.name} to postedFiles);
+
   console.log("✅ Upload workflow completed successfully");
 }
 
