@@ -2,44 +2,61 @@ import fs from "fs";
 import path from "path";
 import { google } from "googleapis";
 
-const MEDIA_DIR = "media";
 const SOURCE_FOLDER_ID = process.env.SOURCE_FOLDER_ID;
-const SERVICE_ACCOUNT = JSON.parse(process.env.GDRIVE_SERVICE_ACCOUNT);
+const POSTED_FOLDER_ID = process.env.POSTED_FOLDER_ID;
 
-const auth = new google.auth.JWT(
-  SERVICE_ACCOUNT.client_email,
-  null,
-  SERVICE_ACCOUNT.private_key,
-  ["https://www.googleapis.com/auth/drive"]
-);
+const MEDIA_DIR = path.join(process.cwd(), "media");
+
+// -------------------- AUTH --------------------
+const auth = new google.auth.GoogleAuth({
+  credentials: JSON.parse(process.env.GOOGLE_SERVICE_KEY),
+  scopes: ["https://www.googleapis.com/auth/drive"],
+});
 
 const drive = google.drive({ version: "v3", auth });
 
-async function run() {
-  // 1️⃣ Delete old GitHub Pages media
-  if (fs.existsSync(MEDIA_DIR)) {
-    fs.rmSync(MEDIA_DIR, { recursive: true, force: true });
-  }
-  fs.mkdirSync(MEDIA_DIR, { recursive: true });
-  console.log("🧹 Old GitHub Pages media deleted");
+// -------------------- HELPERS --------------------
+function getClipNumber(name) {
+  const match = name.match(/clip_(\d+)\.mp4/i);
+  return match ? parseInt(match[1], 10) : null;
+}
 
-  // 2️⃣ List files in Drive source folder
+// -------------------- MAIN --------------------
+async function run() {
+  console.log("🚀 Upload workflow started");
+
+  // 1️⃣ Clear GitHub Pages media folder
+  if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR);
+
+  for (const file of fs.readdirSync(MEDIA_DIR)) {
+    if (file.endsWith(".mp4")) {
+      fs.unlinkSync(path.join(MEDIA_DIR, file));
+    }
+  }
+  console.log("🧹 Old media deleted");
+
+  // 2️⃣ List files from SOURCE folder
   const listRes = await drive.files.list({
-    q: `'${SOURCE_FOLDER_ID}' in parents and mimeType contains 'video/'`,
+    q: '${SOURCE_FOLDER_ID}' in parents and mimeType='video/mp4',
     fields: "files(id, name)",
   });
 
   if (!listRes.data.files.length) {
-    throw new Error("No video files found in source folder");
+    throw new Error("❌ No video files found in SOURCE folder");
   }
 
-  // 3️⃣ Pick next sequential clip
-  const file = listRes.data.files
-    .sort((a, b) =>
-      parseInt(a.name.match(/\d+/)) - parseInt(b.name.match(/\d+/))
-    )[0];
+  // 3️⃣ Sort numerically (clip_16 → clip_17 → ...)
+  const sortedFiles = listRes.data.files
+    .map(f => ({ ...f, num: getClipNumber(f.name) }))
+    .filter(f => f.num !== null)
+    .sort((a, b) => a.num - b.num);
 
-  console.log(`🎯 Selected: ${file.name}`);
+  if (!sortedFiles.length) {
+    throw new Error("❌ No valid clip_XX.mp4 files found");
+  }
+
+  const file = sortedFiles[0];
+  console.log(🎯 Selected: ${file.name});
 
   // 4️⃣ Download file
   const destPath = path.join(MEDIA_DIR, file.name);
@@ -51,21 +68,28 @@ async function run() {
   );
 
   await new Promise((resolve, reject) => {
-    downloadRes.data.pipe(dest);
-    dest.on("finish", resolve);
-    dest.on("error", reject);
+    downloadRes.data
+      .pipe(dest)
+      .on("finish", resolve)
+      .on("error", reject);
   });
 
-  console.log(`⬇️ Downloaded ${file.name}`);
+  console.log(⬇️ Downloaded ${file.name});
 
-  // 5️⃣ DELETE file from Drive source folder (this WILL work)
-  await drive.files.delete({ fileId: file.id });
-  console.log(`🗑️ Deleted ${file.name} from Drive source folder`);
+  // 5️⃣ Move file: SOURCE → POSTED_FILES
+  await drive.files.update({
+    fileId: file.id,
+    addParents: POSTED_FOLDER_ID,
+    removeParents: SOURCE_FOLDER_ID,
+    fields: "id, parents",
+  });
+
+  console.log(📦 Moved ${file.name} to postedFiles);
 
   console.log("✅ Upload workflow completed successfully");
 }
 
 run().catch(err => {
-  console.error("❌ Upload failed:", err.message);
+  console.error("🔥 Upload failed:", err.message);
   process.exit(1);
 });
