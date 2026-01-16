@@ -3,12 +3,9 @@ import path from "path";
 import { google } from "googleapis";
 
 const MEDIA_DIR = "media";
-
-// ENV
-const SERVICE_ACCOUNT = JSON.parse(process.env.GDRIVE_SERVICE_ACCOUNT);
 const SOURCE_FOLDER_ID = process.env.SOURCE_FOLDER_ID;
+const SERVICE_ACCOUNT = JSON.parse(process.env.GDRIVE_SERVICE_ACCOUNT);
 
-// Auth
 const auth = new google.auth.JWT(
   SERVICE_ACCOUNT.client_email,
   null,
@@ -18,60 +15,53 @@ const auth = new google.auth.JWT(
 
 const drive = google.drive({ version: "v3", auth });
 
-// Utils
-function extractNumber(name) {
-  const m = name.match(/clip_(\d+)\.mp4/i);
-  return m ? Number(m[1]) : Infinity;
-}
-
 async function run() {
-  // 1️⃣ Clear GitHub Pages media
+  // 1️⃣ Delete old GitHub Pages media
   if (fs.existsSync(MEDIA_DIR)) {
     fs.rmSync(MEDIA_DIR, { recursive: true, force: true });
   }
-  fs.mkdirSync(MEDIA_DIR);
+  fs.mkdirSync(MEDIA_DIR, { recursive: true });
   console.log("🧹 Old GitHub Pages media deleted");
 
-  // 2️⃣ List files from Drive source
-  const res = await drive.files.list({
-    q: `'${SOURCE_FOLDER_ID}' in parents and trashed=false`,
-    fields: "files(id,name)",
-    supportsAllDrives: true,
-    includeItemsFromAllDrives: true,
+  // 2️⃣ List files in Drive source folder
+  const listRes = await drive.files.list({
+    q: `'${SOURCE_FOLDER_ID}' in parents and mimeType contains 'video/'`,
+    fields: "files(id, name)",
   });
 
-  if (!res.data.files.length) {
-    throw new Error("No files found in source folder");
+  if (!listRes.data.files.length) {
+    throw new Error("No video files found in source folder");
   }
 
   // 3️⃣ Pick next sequential clip
-  const file = res.data.files
-    .sort((a, b) => extractNumber(a.name) - extractNumber(b.name))[0];
+  const file = listRes.data.files
+    .sort((a, b) =>
+      parseInt(a.name.match(/\d+/)) - parseInt(b.name.match(/\d+/))
+    )[0];
 
   console.log(`🎯 Selected: ${file.name}`);
 
-  // 4️⃣ Download clip
+  // 4️⃣ Download file
   const destPath = path.join(MEDIA_DIR, file.name);
   const dest = fs.createWriteStream(destPath);
 
-  const download = await drive.files.get(
+  const downloadRes = await drive.files.get(
     { fileId: file.id, alt: "media" },
     { responseType: "stream" }
   );
 
   await new Promise((resolve, reject) => {
-    download.data.pipe(dest).on("finish", resolve).on("error", reject);
+    downloadRes.data.pipe(dest);
+    dest.on("finish", resolve);
+    dest.on("error", reject);
   });
 
   console.log(`⬇️ Downloaded ${file.name}`);
 
-  // 5️⃣ DELETE file from Drive source
-  await drive.files.delete({
-    fileId: file.id,
-    supportsAllDrives: true,
-  });
+  // 5️⃣ DELETE file from Drive source folder (this WILL work)
+  await drive.files.delete({ fileId: file.id });
+  console.log(`🗑️ Deleted ${file.name} from Drive source folder`);
 
-  console.log(`🗑️ Deleted ${file.name} from Drive source`);
   console.log("✅ Upload workflow completed successfully");
 }
 
