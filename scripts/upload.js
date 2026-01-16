@@ -2,6 +2,21 @@ import fs from "fs";
 import path from "path";
 import { google } from "googleapis";
 
+/* ---------------- ENV VALIDATION ---------------- */
+
+const REQUIRED_ENV = [
+  "GOOGLE_SERVICE_KEY",
+  "SOURCE_FOLDER_ID",
+];
+
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    throw new Error(`Missing environment variable: ${key}`);
+  }
+}
+
+/* ---------------- GOOGLE DRIVE ---------------- */
+
 const auth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_SERVICE_KEY),
   scopes: ["https://www.googleapis.com/auth/drive.readonly"],
@@ -9,50 +24,75 @@ const auth = new google.auth.GoogleAuth({
 
 const drive = google.drive({ version: "v3", auth });
 
-const SOURCE_FOLDER_ID = process.env.SOURCE_FOLDER_ID;
+/* ---------------- CONSTANTS ---------------- */
 
-async function listFiles() {
-  const res = await drive.files.list({
-    q: `'${SOURCE_FOLDER_ID}' in parents and trashed=false`,
-    fields: "files(id, name)",
-  });
-  return res.data.files || [];
-}
+const MEDIA_DIR = path.join(process.cwd(), "media");
+
+/* ---------------- HELPERS ---------------- */
 
 function extractNumber(name) {
   const m = name.match(/(\d+)/);
-  return m ? parseInt(m[1], 10) : Infinity;
+  return m ? Number(m[1]) : Infinity;
 }
 
-async function downloadFile(file) {
-  const mediaDir = path.join(process.cwd(), "media");
-  if (!fs.existsSync(mediaDir)) fs.mkdirSync(mediaDir);
+/* ---------------- CLEAN GITHUB PAGES ---------------- */
 
-  const destPath = path.join(mediaDir, file.name);
+function cleanMediaFolder() {
+  if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR);
+
+  const files = fs.readdirSync(MEDIA_DIR);
+  for (const file of files) {
+    fs.unlinkSync(path.join(MEDIA_DIR, file));
+  }
+
+  console.log("🧹 Cleared GitHub Pages media folder");
+}
+
+/* ---------------- DOWNLOAD FROM DRIVE ---------------- */
+
+async function downloadNextFile() {
+  const res = await drive.files.list({
+    q: `'${process.env.SOURCE_FOLDER_ID}' in parents and trashed=false`,
+    fields: "files(id,name)",
+  });
+
+  const files = res.data.files || [];
+  if (!files.length) {
+    console.log("ℹ️ No files in Drive source folder");
+    process.exit(0);
+  }
+
+  files.sort((a, b) => extractNumber(a.name) - extractNumber(b.name));
+  const file = files[0];
+
+  console.log("⬇️ Downloading:", file.name);
+
+  const destPath = path.join(MEDIA_DIR, file.name);
   const dest = fs.createWriteStream(destPath);
 
-  const res = await drive.files.get(
+  const response = await drive.files.get(
     { fileId: file.id, alt: "media" },
     { responseType: "stream" }
   );
 
   await new Promise((resolve, reject) => {
-    res.data
+    response.data
       .on("end", resolve)
       .on("error", reject)
       .pipe(dest);
   });
 
-  console.log(`✅ Downloaded to media/${file.name}`);
+  console.log("✅ Uploaded to GitHub Pages:", file.name);
 }
 
+/* ---------------- MAIN ---------------- */
+
 (async () => {
-  const files = await listFiles();
-  if (!files.length) throw new Error("No files found in Drive folder");
-
-  files.sort((a, b) => extractNumber(a.name) - extractNumber(b.name));
-  const file = files[0];
-
-  console.log("Uploading:", file.name);
-  await downloadFile(file);
+  try {
+    cleanMediaFolder();
+    await downloadNextFile();
+  } catch (err) {
+    console.error("❌ UPLOAD ERROR:", err.message);
+    process.exit(1);
+  }
 })();
