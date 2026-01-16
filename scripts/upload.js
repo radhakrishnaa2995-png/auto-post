@@ -37,11 +37,11 @@ async function run() {
 
   // 2️⃣ List files from SOURCE folder
   const listRes = await drive.files.list({
-    q: '${SOURCE_FOLDER_ID}' in parents and mimeType='video/mp4',
+    q: `'${SOURCE_FOLDER_ID}' in parents and mimeType='video/mp4'`,
     fields: "files(id, name)",
   });
 
-  if (!listRes.data.files.length) {
+  if (!listRes.data.files || !listRes.data.files.length) {
     throw new Error("❌ No video files found in SOURCE folder");
   }
 
@@ -56,7 +56,7 @@ async function run() {
   }
 
   const file = sortedFiles[0];
-  console.log(🎯 Selected: ${file.name});
+  console.log(`🎯 Selected: ${file.name}`);
 
   // 4️⃣ Download file
   const destPath = path.join(MEDIA_DIR, file.name);
@@ -74,7 +74,7 @@ async function run() {
       .on("error", reject);
   });
 
-  console.log(⬇️ Downloaded ${file.name});
+  console.log(`⬇️ Downloaded ${file.name}`);
 
   // 5️⃣ Move file: SOURCE → POSTED_FILES
   await drive.files.update({
@@ -84,8 +84,7 @@ async function run() {
     fields: "id, parents",
   });
 
-  console.log(📦 Moved ${file.name} to postedFiles);
-
+  console.log(`📦 Moved ${file.name} to postedFiles`);
   console.log("✅ Upload workflow completed successfully");
 }
 
