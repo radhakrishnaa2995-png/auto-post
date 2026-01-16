@@ -1,61 +1,105 @@
-import fs from "fs";
 import fetch from "node-fetch";
+import fs from "fs";
 
 const IG_TOKEN = process.env.IG_TOKEN;
 const IG_USER_ID = process.env.IG_USER_ID;
-const GH_USERNAME = process.env.GH_USERNAME;
-const GH_REPO = process.env.GH_REPO;
 
 const MEDIA_DIR = "media";
 
 const CAPTION = `DEVON KE DEV MAHADEV 🙏🏻
+.
+.
+.
+#mahadev #harharmahadev #mahadeva #bholenath #jaibholenath #shiv #shiva #shivshakti #shivshankar #shivbhakt #shivshambhu #mahakaal #mahakaleshwar #shambhu #amarnath #kedarnathtemple #bholebaba #bambambhole #omnamahshivaya #devokedevmahadev #viralreels #instagood #reelitfeelit #instagram`;
 
-#mahadev #harharmahadev #mahadeva #bholenath
-#shiv #shiva #shivshakti #mahakaal
-#omnamahshivaya #devokedevmahadev
-#viralreels #instagram`;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function getMediaFile() {
-  const files = fs.readdirSync(MEDIA_DIR).filter(f => f.endsWith(".mp4"));
+function getLatestMediaFile() {
+  const files = fs
+    .readdirSync(MEDIA_DIR)
+    .filter((f) => f.endsWith(".mp4"))
+    .sort((a, b) => {
+      const na = parseInt(a.match(/\d+/)?.[0] || 0);
+      const nb = parseInt(b.match(/\d+/)?.[0] || 0);
+      return na - nb;
+    });
+
   if (!files.length) throw new Error("No media file found");
-  return files[0];
+  return files[files.length - 1];
 }
 
-async function postReel() {
-  const file = getMediaFile();
-  const mediaUrl = `https://${GH_USERNAME}.github.io/${GH_REPO}/media/${file}`;
-
-  const create = await fetch(
+async function createContainer(videoUrl) {
+  const res = await fetch(
     `https://graph.facebook.com/v19.0/${IG_USER_ID}/media`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         media_type: "REELS",
-        video_url: mediaUrl,
+        video_url: videoUrl,
         caption: CAPTION,
-        access_token: IG_TOKEN
-      })
+        access_token: IG_TOKEN,
+      }),
     }
-  ).then(r => r.json());
+  );
 
-  if (!create.id) throw new Error("Media container creation failed");
+  const data = await res.json();
+  if (!data.id) throw new Error("Failed to create media container");
+  return data.id;
+}
 
-  const publish = await fetch(
+async function waitForProcessing(containerId) {
+  for (let i = 0; i < 20; i++) {
+    const res = await fetch(
+      `https://graph.facebook.com/v19.0/${containerId}?fields=status_code&access_token=${IG_TOKEN}`
+    );
+    const data = await res.json();
+
+    if (data.status_code === "FINISHED") return;
+    if (data.status_code === "ERROR")
+      throw new Error("Instagram processing error");
+
+    await sleep(15000); // wait 15 seconds
+  }
+
+  throw new Error("Instagram processing timeout");
+}
+
+async function publish(containerId) {
+  const res = await fetch(
     `https://graph.facebook.com/v19.0/${IG_USER_ID}/media_publish`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        creation_id: create.id,
-        access_token: IG_TOKEN
-      })
+        creation_id: containerId,
+        access_token: IG_TOKEN,
+      }),
     }
-  ).then(r => r.json());
+  );
 
-  if (!publish.id) throw new Error("Publish failed");
-
-  console.log("✅ Reel posted successfully");
+  const data = await res.json();
+  if (!data.id) throw new Error("Publish failed");
 }
 
-postReel();
+async function main() {
+  const file = getLatestMediaFile();
+  const videoUrl = `https://${process.env.GH_USERNAME}.github.io/${process.env.GH_REPO}/media/${file}`;
+
+  console.log("Posting:", file);
+  console.log("Video URL:", videoUrl);
+
+  const containerId = await createContainer(videoUrl);
+  console.log("Container created:", containerId);
+
+  await waitForProcessing(containerId);
+  console.log("Processing finished");
+
+  await publish(containerId);
+  console.log("Reel posted successfully");
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
