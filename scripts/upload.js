@@ -1,98 +1,95 @@
-import fs from "fs-extra";
+import fs from "fs";
 import path from "path";
 import { google } from "googleapis";
 
-const MEDIA_DIR = "media";
 const SOURCE_FOLDER_ID = process.env.SOURCE_FOLDER_ID;
 const POSTED_FOLDER_ID = process.env.POSTED_FOLDER_ID;
-const SERVICE_KEY = JSON.parse(process.env.GOOGLE_SERVICE_KEY);
 
-// Google Drive auth
-const auth = new google.auth.JWT(
-  SERVICE_KEY.client_email,
-  null,
-  SERVICE_KEY.private_key,
-  ["https://www.googleapis.com/auth/drive"]
-);
+const MEDIA_DIR = path.join(process.cwd(), "media");
+
+// -------------------- AUTH --------------------
+const auth = new google.auth.GoogleAuth({
+  credentials: JSON.parse(process.env.GOOGLE_SERVICE_KEY),
+  scopes: ["https://www.googleapis.com/auth/drive"],
+});
 
 const drive = google.drive({ version: "v3", auth });
 
-// 1️⃣ Delete old GitHub Pages media
-async function cleanMediaFolder() {
-  await fs.ensureDir(MEDIA_DIR);
-  const files = await fs.readdir(MEDIA_DIR);
-  for (const file of files) {
-    if (file !== ".gitkeep") {
-      await fs.remove(path.join(MEDIA_DIR, file));
+// -------------------- HELPERS --------------------
+function getClipNumber(name) {
+  const match = name.match(/clip_(\d+)\.mp4/i);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+// -------------------- MAIN --------------------
+async function run() {
+  console.log("🚀 Upload workflow started");
+
+  // 1️⃣ Clear GitHub Pages media folder
+  if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR);
+
+  for (const file of fs.readdirSync(MEDIA_DIR)) {
+    if (file.endsWith(".mp4")) {
+      fs.unlinkSync(path.join(MEDIA_DIR, file));
     }
   }
-  console.log("🧹 Old GitHub Pages media deleted");
-}
+  console.log("🧹 Old media deleted");
 
-// 2️⃣ Extract number from filename
-function extractNumber(name) {
-  const match = name.match(/(\d+)/);
-  return match ? parseInt(match[1], 10) : Infinity;
-}
-
-// 3️⃣ Get SMALLEST numbered file
-async function getNextSequentialFile() {
-  const res = await drive.files.list({
-    q: `'${SOURCE_FOLDER_ID}' in parents and mimeType contains 'video/' and trashed = false`,
-    fields: "files(id, name)"
+  // 2️⃣ List files from SOURCE folder
+  const listRes = await drive.files.list({
+    q: `'${SOURCE_FOLDER_ID}' in parents and mimeType='video/mp4'`,
+    fields: "files(id, name)",
   });
 
-  if (!res.data.files.length) {
-    throw new Error("No videos left in source folder");
+  if (!listRes.data.files.length) {
+    throw new Error("❌ No video files found in SOURCE folder");
   }
 
-  const sorted = res.data.files
-    .map(f => ({ ...f, num: extractNumber(f.name) }))
-    .filter(f => Number.isFinite(f.num))
+  // 3️⃣ Sort numerically (clip_16 → clip_17 → ...)
+  const sortedFiles = listRes.data.files
+    .map(f => ({ ...f, num: getClipNumber(f.name) }))
+    .filter(f => f.num !== null)
     .sort((a, b) => a.num - b.num);
 
-  if (!sorted.length) {
-    throw new Error("No valid numbered clips found");
+  if (!sortedFiles.length) {
+    throw new Error("❌ No valid clip_XX.mp4 files found");
   }
 
-  return sorted[0]; // smallest number
-}
+  const file = sortedFiles[0];
+  console.log(`🎯 Selected: ${file.name}`);
 
-// 4️⃣ Download selected file
-async function downloadFile(file) {
-  const dest = path.join(MEDIA_DIR, file.name);
+  // 4️⃣ Download file
+  const destPath = path.join(MEDIA_DIR, file.name);
+  const dest = fs.createWriteStream(destPath);
 
-  const response = await drive.files.get(
+  const downloadRes = await drive.files.get(
     { fileId: file.id, alt: "media" },
     { responseType: "stream" }
   );
 
   await new Promise((resolve, reject) => {
-    const stream = fs.createWriteStream(dest);
-    response.data.pipe(stream);
-    stream.on("finish", resolve);
-    stream.on("error", reject);
+    downloadRes.data
+      .pipe(dest)
+      .on("finish", resolve)
+      .on("error", reject);
   });
 
   console.log(`⬇️ Downloaded ${file.name}`);
-}
 
-// 5️⃣ Move file to POSTED folder (remove from SOURCE)
-async function moveToPosted(file) {
+  // 5️⃣ Move file: SOURCE → POSTED_FILES
   await drive.files.update({
     fileId: file.id,
     addParents: POSTED_FOLDER_ID,
     removeParents: SOURCE_FOLDER_ID,
-    fields: "id, parents"
+    fields: "id, parents",
   });
 
-  console.log(`📁 Moved ${file.name} to POSTED folder`);
+  console.log(`📦 Moved ${file.name} to postedFiles`);
+
+  console.log("✅ Upload workflow completed successfully");
 }
 
-// MAIN
-(async () => {
-  await cleanMediaFolder();
-  const file = await getNextSequentialFile();
-  await downloadFile(file);
-  await moveToPosted(file);
-})();
+run().catch(err => {
+  console.error("🔥 Upload failed:", err.message);
+  process.exit(1);
+});
