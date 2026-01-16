@@ -1,93 +1,80 @@
 import fs from "fs";
 import path from "path";
 import { google } from "googleapis";
-import fetch from "node-fetch";
 
-const __dirname = new URL(".", import.meta.url).pathname;
+const MEDIA_DIR = "media";
 
-// ===== CONFIG =====
-const SOURCE_FOLDER_ID = process.env.SOURCE_FOLDER_ID;     // Mahadev
-const POSTED_FOLDER_ID = process.env.POSTED_FOLDER_ID;     // postedFiles
-const MEDIA_DIR = path.resolve("media");
+// ENV
+const SERVICE_ACCOUNT = JSON.parse(process.env.GDRIVE_SERVICE_ACCOUNT);
+const SOURCE_FOLDER_ID = process.env.SOURCE_FOLDER_ID;
 
-// ===== AUTH =====
-const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GDRIVE_SERVICE_ACCOUNT),
-  scopes: ["https://www.googleapis.com/auth/drive"],
-});
+// Auth
+const auth = new google.auth.JWT(
+  SERVICE_ACCOUNT.client_email,
+  null,
+  SERVICE_ACCOUNT.private_key,
+  ["https://www.googleapis.com/auth/drive"]
+);
 
 const drive = google.drive({ version: "v3", auth });
 
-// ===== HELPERS =====
+// Utils
 function extractNumber(name) {
   const m = name.match(/clip_(\d+)\.mp4/i);
-  return m ? parseInt(m[1], 10) : null;
+  return m ? Number(m[1]) : Infinity;
 }
 
-// ===== MAIN =====
 async function run() {
-  if (!fs.existsSync(MEDIA_DIR)) {
-    fs.mkdirSync(MEDIA_DIR, { recursive: true });
+  // 1️⃣ Clear GitHub Pages media
+  if (fs.existsSync(MEDIA_DIR)) {
+    fs.rmSync(MEDIA_DIR, { recursive: true, force: true });
   }
+  fs.mkdirSync(MEDIA_DIR);
+  console.log("🧹 Old GitHub Pages media deleted");
 
-  // 1️⃣ Remove old GitHub Pages media
-  for (const f of fs.readdirSync(MEDIA_DIR)) {
-    fs.unlinkSync(path.join(MEDIA_DIR, f));
-  }
-  console.log("🗑 Old GitHub Pages media deleted");
-
-  // 2️⃣ List files in SOURCE folder
-  const list = await drive.files.list({
-    q: `'${SOURCE_FOLDER_ID}' in parents and mimeType='video/mp4'`,
-    fields: "files(id, name)",
+  // 2️⃣ List files from Drive source
+  const res = await drive.files.list({
+    q: `'${SOURCE_FOLDER_ID}' in parents and trashed=false`,
+    fields: "files(id,name)",
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
   });
 
-  if (!list.data.files.length) {
-    throw new Error("No clips found in source folder");
+  if (!res.data.files.length) {
+    throw new Error("No files found in source folder");
   }
 
-  // 3️⃣ Pick NEXT SEQUENTIAL clip
-  const files = list.data.files
-    .map(f => ({ ...f, num: extractNumber(f.name) }))
-    .filter(f => f.num !== null)
-    .sort((a, b) => a.num - b.num);
+  // 3️⃣ Pick next sequential clip
+  const file = res.data.files
+    .sort((a, b) => extractNumber(a.name) - extractNumber(b.name))[0];
 
-  const file = files[0];
   console.log(`🎯 Selected: ${file.name}`);
 
-  // 4️⃣ Download file
+  // 4️⃣ Download clip
   const destPath = path.join(MEDIA_DIR, file.name);
-  const res = await drive.files.get(
+  const dest = fs.createWriteStream(destPath);
+
+  const download = await drive.files.get(
     { fileId: file.id, alt: "media" },
     { responseType: "stream" }
   );
 
   await new Promise((resolve, reject) => {
-    const dest = fs.createWriteStream(destPath);
-    res.data.pipe(dest);
-    dest.on("finish", resolve);
-    dest.on("error", reject);
+    download.data.pipe(dest).on("finish", resolve).on("error", reject);
   });
 
-  console.log(`⬇ Downloaded ${file.name}`);
+  console.log(`⬇️ Downloaded ${file.name}`);
 
-  // 5️⃣ COPY → postedFiles (n8n-style)
-  const copied = await drive.files.copy({
+  // 5️⃣ DELETE file from Drive source
+  await drive.files.delete({
     fileId: file.id,
-    parents: [POSTED_FOLDER_ID],
-    name: file.name,
+    supportsAllDrives: true,
   });
 
-  console.log(`📦 Copied ${file.name} to postedFiles`);
-
-  // 6️⃣ DELETE original from source
-  await drive.files.delete({ fileId: file.id });
-  console.log(`🗑 Removed ${file.name} from source folder`);
-
+  console.log(`🗑️ Deleted ${file.name} from Drive source`);
   console.log("✅ Upload workflow completed successfully");
 }
 
-// ===== RUN =====
 run().catch(err => {
   console.error("❌ Upload failed:", err.message);
   process.exit(1);
