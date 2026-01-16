@@ -12,10 +12,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 18
@@ -26,13 +26,14 @@ jobs:
       - name: Upload file from Drive to media/
         run: node scripts/upload.js
         env:
-          GOOGLE_SERVICE_KEY: ${{ secrets.GOOGLE_SERVICE_KEY }}
+          GDRIVE_SERVICE_ACCOUNT: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
           SOURCE_FOLDER_ID: ${{ secrets.SOURCE_FOLDER_ID }}
+          POSTED_FOLDER_ID: ${{ secrets.POSTED_FOLDER_ID }}
 
       - name: Commit and push media
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add media/
-          git commit -m "Upload media for posting" || echo "No changes"
+          git commit -m "Upload media for posting" || echo "No changes to commit"
           git push
