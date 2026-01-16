@@ -28,7 +28,6 @@ jobs:
         env:
           GDRIVE_SERVICE_ACCOUNT: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
           SOURCE_FOLDER_ID: ${{ secrets.SOURCE_FOLDER_ID }}
-          POSTED_FOLDER_ID: ${{ secrets.POSTED_FOLDER_ID }}
 
       - name: Commit and push media
         run: |
