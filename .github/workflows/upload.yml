@@ -26,7 +26,7 @@ jobs:
       - name: Upload file from Drive to media/
         run: node scripts/upload.js
         env:
-          GDRIVE_SERVICE_ACCOUNT: ${{ secrets.GDRIVE_SERVICE_ACCOUNT }}
+          GOOGLE_SERVICE_KEY: ${{ secrets.GOOGLE_SERVICE_KEY }}
           SOURCE_FOLDER_ID: ${{ secrets.SOURCE_FOLDER_ID }}
 
       - name: Commit and push media
