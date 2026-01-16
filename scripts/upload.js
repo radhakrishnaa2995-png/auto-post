@@ -1,91 +1,88 @@
 import fs from "fs";
 import path from "path";
 import { google } from "googleapis";
+import fetch from "node-fetch";
 
+const __dirname = new URL(".", import.meta.url).pathname;
+
+// ENV
 const SOURCE_FOLDER_ID = process.env.SOURCE_FOLDER_ID;
 const POSTED_FOLDER_ID = process.env.POSTED_FOLDER_ID;
+const GOOGLE_SERVICE_KEY = JSON.parse(process.env.GOOGLE_SERVICE_KEY);
 
-const MEDIA_DIR = path.join(process.cwd(), "media");
-
-// -------------------- AUTH --------------------
-const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_SERVICE_KEY),
-  scopes: ["https://www.googleapis.com/auth/drive"],
-});
+// AUTH
+const auth = new google.auth.JWT(
+  GOOGLE_SERVICE_KEY.client_email,
+  null,
+  GOOGLE_SERVICE_KEY.private_key,
+  ["https://www.googleapis.com/auth/drive"]
+);
 
 const drive = google.drive({ version: "v3", auth });
 
-// -------------------- HELPERS --------------------
-function getClipNumber(name) {
-  const match = name.match(/clip_(\d+)\.mp4/i);
-  return match ? parseInt(match[1], 10) : null;
+// HELPERS
+function extractClipNumber(name) {
+  const m = name.match(/clip_(\d+)\.mp4/i);
+  return m ? Number(m[1]) : null;
 }
 
-// -------------------- MAIN --------------------
-async function run() {
-  console.log("🚀 Upload workflow started");
+async function clearMediaFolder() {
+  const mediaDir = path.join(__dirname, "../media");
+  if (!fs.existsSync(mediaDir)) return;
 
-  // 1️⃣ Clear GitHub Pages media folder
-  if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR);
-
-  for (const file of fs.readdirSync(MEDIA_DIR)) {
-    if (file.endsWith(".mp4")) {
-      fs.unlinkSync(path.join(MEDIA_DIR, file));
-    }
+  for (const f of fs.readdirSync(mediaDir)) {
+    if (f.endsWith(".mp4")) fs.unlinkSync(path.join(mediaDir, f));
   }
-  console.log("🧹 Old media deleted");
+}
 
-  // 2️⃣ List files from SOURCE folder
-  const listRes = await drive.files.list({
-    q: `'${SOURCE_FOLDER_ID}' in parents and mimeType='video/mp4'`,
-    fields: "files(id, name)",
+// MAIN
+async function run() {
+  console.log("🧹 Clearing GitHub Pages media...");
+  await clearMediaFolder();
+
+  console.log("📂 Fetching source files...");
+  const res = await drive.files.list({
+    q: `'${SOURCE_FOLDER_ID}' in parents and trashed=false`,
+    fields: "files(id, name, parents)",
   });
 
-  if (!listRes.data.files.length) {
-    throw new Error("❌ No video files found in SOURCE folder");
-  }
+  const files = res.data.files
+    .map(f => ({ ...f, n: extractClipNumber(f.name) }))
+    .filter(f => f.n !== null)
+    .sort((a, b) => a.n - b.n);
 
-  // 3️⃣ Sort numerically (clip_16 → clip_17 → ...)
-  const sortedFiles = listRes.data.files
-    .map(f => ({ ...f, num: getClipNumber(f.name) }))
-    .filter(f => f.num !== null)
-    .sort((a, b) => a.num - b.num);
+  if (!files.length) throw new Error("No clips found in source folder");
 
-  if (!sortedFiles.length) {
-    throw new Error("❌ No valid clip_XX.mp4 files found");
-  }
+  const file = files[0];
+  console.log(`🎯 Selected ${file.name}`);
 
-  const file = sortedFiles[0];
-  console.log(`🎯 Selected: ${file.name}`);
-
-  // 4️⃣ Download file
-  const destPath = path.join(MEDIA_DIR, file.name);
-  const dest = fs.createWriteStream(destPath);
-
+  // DOWNLOAD
+  const destPath = path.join(__dirname, "../media", file.name);
   const downloadRes = await drive.files.get(
     { fileId: file.id, alt: "media" },
     { responseType: "stream" }
   );
 
   await new Promise((resolve, reject) => {
-    downloadRes.data
-      .pipe(dest)
-      .on("finish", resolve)
-      .on("error", reject);
+    const dest = fs.createWriteStream(destPath);
+    downloadRes.data.pipe(dest);
+    dest.on("finish", resolve);
+    dest.on("error", reject);
   });
 
   console.log(`⬇️ Downloaded ${file.name}`);
 
-  // 5️⃣ Move file: SOURCE → POSTED_FILES
+  // 🔥 CRITICAL FIX — MOVE FILE SAFELY
+  const currentParents = file.parents?.join(",") || "";
+
   await drive.files.update({
     fileId: file.id,
     addParents: POSTED_FOLDER_ID,
-    removeParents: SOURCE_FOLDER_ID,
+    removeParents: currentParents,
     fields: "id, parents",
   });
 
-  console.log(`📦 Moved ${file.name} to postedFiles`);
-
+  console.log(`📦 Moved ${file.name} → postedFiles`);
   console.log("✅ Upload workflow completed successfully");
 }
 
