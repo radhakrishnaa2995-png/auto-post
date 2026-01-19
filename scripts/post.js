@@ -10,7 +10,13 @@ const CAPTION = `DEVON KE DEV MAHADEV 🙏🏻
 .
 .
 .
-#mahadev #harharmahadev #mahadeva #bholenath #jaibholenath #shiv #shiva #shivshakti #shivshankar #shivbhakt #shivshambhu #mahakaal #mahakaleshwar #shambhu #amarnath #kedarnathtemple #bholebaba #bambambhole #omnamahshivaya #devokedevmahadev #viralreels #instagood #reelitfeelit #instagram`;
+#mahadev #harharmahadev #mahadeva #bholenath #jaibholenath #shiv #shiva #shivshakti #shivshankar #shivbhakt #shivshambhu #mahakaal #mahakaleshwar #shambhu #amarnath #kedarnathtemple #bholebaba #bambambhole #omnamahshivaya #devokedevmahadev #viralreels #instagood #reelitfeelit #instagram
+
+⚠️ Disclaimer:
+No copyright infringement intended.
+All rights reserved to the respected owner.
+This video is only for entertainment purpose.
+I don't own this video.`;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
