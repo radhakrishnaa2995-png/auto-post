@@ -20,18 +20,22 @@ I don't own this video.`;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function getLatestMediaFile() {
+// ✅ PICK LOWEST NUMBERED CLIP
+function getNextMediaFile() {
   const files = fs
     .readdirSync(MEDIA_DIR)
     .filter((f) => f.endsWith(".mp4"))
     .sort((a, b) => {
       const na = parseInt(a.match(/\d+/)?.[0] || 0);
       const nb = parseInt(b.match(/\d+/)?.[0] || 0);
-      return na - nb;
+      return na - nb; // ascending
     });
 
-  if (!files.length) throw new Error("No media file found");
-  return files[files.length - 1];
+  if (!files.length) {
+    throw new Error("No media file found in media folder");
+  }
+
+  return files[0]; // ✅ IMPORTANT FIX
 }
 
 async function createContainer(videoUrl) {
@@ -62,10 +66,11 @@ async function waitForProcessing(containerId) {
     const data = await res.json();
 
     if (data.status_code === "FINISHED") return;
-    if (data.status_code === "ERROR")
+    if (data.status_code === "ERROR") {
       throw new Error("Instagram processing error");
+    }
 
-    await sleep(15000); // wait 15 seconds
+    await sleep(15000);
   }
 
   throw new Error("Instagram processing timeout");
@@ -89,23 +94,24 @@ async function publish(containerId) {
 }
 
 async function main() {
-  const file = getLatestMediaFile();
+  const file = getNextMediaFile();
+
   const videoUrl = `https://${process.env.GH_USERNAME}.github.io/${process.env.GH_REPO}/media/${file}`;
 
-  console.log("Posting:", file);
-  console.log("Video URL:", videoUrl);
+  console.log("🎬 Posting:", file);
+  console.log("🔗 Video URL:", videoUrl);
 
   const containerId = await createContainer(videoUrl);
-  console.log("Container created:", containerId);
+  console.log("📦 Container created:", containerId);
 
   await waitForProcessing(containerId);
-  console.log("Processing finished");
+  console.log("⏳ Processing finished");
 
   await publish(containerId);
-  console.log("Reel posted successfully");
+  console.log("✅ Reel posted successfully");
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error("❌ Post failed:", err.message);
   process.exit(1);
 });
